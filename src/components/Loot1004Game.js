@@ -62,6 +62,9 @@ function Loot1004Game() {
   const [itemIcons, setItemIcons] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [modalConfig, setModalConfig] = useState({ title: '', message: '', onConfirm: null, onCancel: null });
+  const [blockedTiles, setBlockedTiles] = useState([]); // 갈 수 없는 칸들
+  const [isMapEditor, setIsMapEditor] = useState(false); // 맵 에디터 모드
+  const [selectedTile, setSelectedTile] = useState(null); // 선택된 타일
 
   // 공통 함수: 아이템 제거 및 아이콘 업데이트
   const removeItemAndUpdateIcons = useCallback((x, y) => {
@@ -205,6 +208,9 @@ function Loot1004Game() {
     setFloatingTexts([]);
     setPendingTrap(null);
     setWasAtEntrance(false);
+    setBlockedTiles([]);
+    setIsMapEditor(false);
+    setSelectedTile(null);
     setGameState('playing');
   }, []);
 
@@ -271,7 +277,8 @@ function Loot1004Game() {
 
   // 렌더링 함수들
   const getTileDisplay = useCallback((tile, x, y) => {
-    if (revealed[currentFloor] && revealed[currentFloor][y] && revealed[currentFloor][y][x]) {
+    // 맵 에디터 모드이거나 공개된 칸인 경우
+    if (isMapEditor || (revealed[currentFloor] && revealed[currentFloor][y] && revealed[currentFloor][y][x])) {
       const tileIcons = {
         [TILE_TYPES.EMPTY]: '⬜',
         [TILE_TYPES.TREASURE]: '💎',
@@ -289,10 +296,15 @@ function Loot1004Game() {
       return tileIcons[tile] || '⬜';
     }
     return '⬛';
-  }, [currentFloor, revealed]);
+  }, [currentFloor, revealed, isMapEditor]);
 
   // 지나간 칸에 아이템 표시 함수
   const getVisitedTileDisplay = useCallback((tile, x, y) => {
+    // 맵 에디터 모드에서는 모든 타일 공개
+    if (isMapEditor) {
+      return getTileDisplay(tile, x, y);
+    }
+    
     // 이미 공개된 칸이거나 지도로 공개된 칸인 경우
     if ((revealed[currentFloor] && revealed[currentFloor][y] && revealed[currentFloor][y][x]) || 
         mapRevealed.some(pos => pos.x === x && pos.y === y)) {
@@ -301,7 +313,7 @@ function Loot1004Game() {
     
     // 방문하지 않은 칸은 완전히 가림
     return '⬛';
-  }, [currentFloor, revealed, mapRevealed, getTileDisplay]);
+  }, [currentFloor, revealed, mapRevealed, getTileDisplay, isMapEditor]);
 
   const movePlayer = useCallback((dx, dy) => {
     if (gameState !== 'playing') return;
@@ -309,10 +321,30 @@ function Loot1004Game() {
     const newPos = { x: playerPos.x + dx, y: playerPos.y + dy };
     
     // 경계 및 벽 체크
-    if (newPos.x < 0 || newPos.x >= GRID_SIZE || newPos.y < 0 || newPos.y >= GRID_SIZE) return;
+    if (newPos.x < 0 || newPos.x >= GRID_SIZE || newPos.y < 0 || newPos.y >= GRID_SIZE) {
+      // 갈 수 없는 칸에 X 표시 추가
+      setBlockedTiles(prev => {
+        const key = `${currentFloor},${newPos.x},${newPos.y}`;
+        if (!prev.includes(key)) {
+          return [...prev, key];
+        }
+        return prev;
+      });
+      return;
+    }
     
     const tile = floors[currentFloor][newPos.y][newPos.x];
-    if (tile === TILE_TYPES.WALL) return;
+    if (tile === TILE_TYPES.WALL) {
+      // 벽에 닿았을 때도 X 표시 추가
+      setBlockedTiles(prev => {
+        const key = `${currentFloor},${newPos.x},${newPos.y}`;
+        if (!prev.includes(key)) {
+          return [...prev, key];
+        }
+        return prev;
+      });
+      return;
+    }
     
     // wasAtEntrance 설정
     if (currentFloor === 0 && playerPos.x === entrancePos.x && playerPos.y === entrancePos.y) {
@@ -361,6 +393,15 @@ function Loot1004Game() {
           () => {
             setCurrentFloor(prev => prev + 1);
             setPlayerPos({ x: 3, y: 3 });
+            // 층 이동 시 시작 칸을 방문한 것으로 처리
+            setRevealed(prev => {
+              const newRevealed = [...prev];
+              if (!newRevealed[currentFloor + 1]) {
+                newRevealed[currentFloor + 1] = Array(7).fill().map(() => Array(7).fill(false));
+              }
+              newRevealed[currentFloor + 1][3][3] = true;
+              return newRevealed;
+            });
             addFloatingText('다음 층으로 이동');
           },
           () => {}
@@ -375,6 +416,15 @@ function Loot1004Game() {
           () => {
             setCurrentFloor(prev => prev - 1);
             setPlayerPos({ x: 3, y: 3 });
+            // 층 이동 시 시작 칸을 방문한 것으로 처리
+            setRevealed(prev => {
+              const newRevealed = [...prev];
+              if (!newRevealed[currentFloor - 1]) {
+                newRevealed[currentFloor - 1] = Array(7).fill().map(() => Array(7).fill(false));
+              }
+              newRevealed[currentFloor - 1][3][3] = true;
+              return newRevealed;
+            });
             addFloatingText('위 층으로 이동');
           },
           () => {}
@@ -437,6 +487,40 @@ function Loot1004Game() {
     setGameState('menu');
   }, []);
 
+  // 맵 에디터 토글
+  const toggleMapEditor = useCallback(() => {
+    setIsMapEditor(prev => !prev);
+  }, []);
+
+  // 맵 에디터에서 타일 변경
+  const changeTileInEditor = useCallback((x, y, tileType) => {
+    if (!isMapEditor || !selectedTile) return;
+    
+    setFloors(prev => {
+      const newFloors = [...prev];
+      newFloors[currentFloor][y][x] = selectedTile;
+      return newFloors;
+    });
+
+    // 아이템 아이콘 업데이트
+    setItemIcons(prev => {
+      const newIcons = [...prev];
+      if (!newIcons[currentFloor]) {
+        newIcons[currentFloor] = Array(7).fill().map(() => Array(7).fill(null));
+      }
+      
+      if (selectedTile === TILE_TYPES.EMPTY || selectedTile === TILE_TYPES.WALL || 
+          selectedTile === TILE_TYPES.ENTRANCE || selectedTile === TILE_TYPES.STAIRS_UP || 
+          selectedTile === TILE_TYPES.STAIRS_DOWN) {
+        newIcons[currentFloor][y][x] = null;
+      } else {
+        newIcons[currentFloor][y][x] = { x, y, type: selectedTile };
+      }
+      
+      return newIcons;
+    });
+  }, [isMapEditor, selectedTile, currentFloor]);
+
   // useEffect들
   useEffect(() => {
     checkGameOver();
@@ -491,7 +575,8 @@ function Loot1004Game() {
 
   // 렌더링 함수들
   const getItemIcon = useCallback((x, y) => {
-    if ((revealed[currentFloor] && revealed[currentFloor][y] && revealed[currentFloor][y][x]) || 
+    // 맵 에디터 모드이거나 공개된 칸인 경우
+    if (isMapEditor || (revealed[currentFloor] && revealed[currentFloor][y] && revealed[currentFloor][y][x]) || 
         mapRevealed.some(pos => pos.x === x && pos.y === y)) {
       if (itemIcons[currentFloor] && itemIcons[currentFloor][y] && itemIcons[currentFloor][y][x]) {
         const icon = itemIcons[currentFloor][y][x];
@@ -510,7 +595,13 @@ function Loot1004Game() {
       }
     }
     return '';
-  }, [currentFloor, revealed, mapRevealed, itemIcons]);
+  }, [currentFloor, revealed, mapRevealed, itemIcons, isMapEditor]);
+
+  // X 표시 렌더링 함수
+  const getBlockedMarker = useCallback((x, y) => {
+    const key = `${currentFloor},${x},${y}`;
+    return blockedTiles.includes(key) ? '❌' : '';
+  }, [currentFloor, blockedTiles]);
 
   const renderGameBoard = useCallback(() => {
     if (!floors[currentFloor]) return null;
@@ -530,7 +621,10 @@ function Loot1004Game() {
                     mapRevealed.some(pos => pos.x === x && pos.y === y) ? 'map-revealed' : ''
                   }`}
                   onClick={() => {
-                    if (gameState === 'playing') {
+                    if (isMapEditor) {
+                      // 맵 에디터 모드에서는 선택된 타일로 변경
+                      changeTileInEditor(x, y);
+                    } else if (gameState === 'playing') {
                       const dx = x - playerPos.x;
                       const dy = y - playerPos.y;
                       if ((Math.abs(dx) === 1 && dy === 0) || (Math.abs(dy) === 1 && dx === 0)) {
@@ -543,6 +637,11 @@ function Loot1004Game() {
                   {getItemIcon(x, y) && (
                     <div className="item-icon">
                       {getItemIcon(x, y)}
+                    </div>
+                  )}
+                  {getBlockedMarker(x, y) && (
+                    <div className="blocked-marker">
+                      {getBlockedMarker(x, y)}
                     </div>
                   )}
                 </div>
@@ -661,35 +760,81 @@ function Loot1004Game() {
 
         {/* 오른쪽 사이드바 */}
         <div className="right-sidebar">
-          <div className="cards-section">
-            <h4>카드</h4>
-            <div className="card-buttons">
-              <button onClick={useHeal} disabled={cards.heal === 0 || health >= 3}>
-                체력 회복 ({cards.heal})
-              </button>
-              <button onClick={useTrapDisarm} disabled={cards.trap_disarm === 0 || !pendingTrap}>
-                함정 제거 ({cards.trap_disarm})
-              </button>
-              <button onClick={useMap} disabled={cards.map === 0}>
-                지도 ({cards.map})
-              </button>
-              <button onClick={useMultiplierCard} disabled={cards.multiplier_card === 0}>
-                배수 증가 ({cards.multiplier_card})
-              </button>
-            </div>
+          {/* 맵 에디터 토글 버튼 */}
+          <div className="map-editor-section">
+            <button 
+              onClick={toggleMapEditor}
+              className={isMapEditor ? 'active' : ''}
+              style={{ 
+                backgroundColor: isMapEditor ? '#4CAF50' : '#666',
+                color: 'white',
+                padding: '10px',
+                border: 'none',
+                borderRadius: '5px',
+                cursor: 'pointer',
+                marginBottom: '10px'
+              }}
+            >
+              {isMapEditor ? '맵 에디터 종료' : '맵 에디터 시작'}
+            </button>
           </div>
-          
-          <div className="controls-section">
-            <h4>조작법</h4>
-            <div>방향키 또는 WASD: 이동</div>
-            <div>E: 탈출</div>
-            <div>1-4: 카드 사용</div>
-          </div>
-          
-          {pendingTrap && (
-            <div className="warning">
-              ⚠️ 함정이 활성화되었습니다! 함정 제거 카드를 사용하세요.
+
+          {isMapEditor ? (
+            <div className="map-editor-panel">
+              <h4>맵 에디터</h4>
+              <div className="tile-selector">
+                <h5>타일 선택:</h5>
+                <div className="tile-buttons">
+                  <button onClick={() => setSelectedTile(TILE_TYPES.EMPTY)}>⬜ 빈 공간</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.WALL)}>🧱 벽</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.TREASURE)}>💎 보물</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.BIG_TREASURE)}>💍 대보물</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.TRAP)}>💣 함정</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.MULTIPLIER)}>⭐ 배수</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.CARD)}>🃏 카드</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.POTION)}>🧪 포션</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.STAIRS_UP)}>⬆️ 위 계단</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.STAIRS_DOWN)}>⬇️ 아래 계단</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.ENTRANCE)}>🚪 입구</button>
+                  <button onClick={() => setSelectedTile(TILE_TYPES.FINAL_TREASURE)}>👑 최종보물</button>
+                </div>
+                <p>선택된 타일: {selectedTile || '없음'}</p>
+                <p>타일을 클릭하여 배치하세요</p>
+              </div>
             </div>
+          ) : (
+            <>
+              <div className="cards-section">
+                <h4>카드</h4>
+                <div className="card-buttons">
+                  <button onClick={useHeal} disabled={cards.heal === 0 || health >= 3}>
+                    체력 회복 ({cards.heal})
+                  </button>
+                  <button onClick={useTrapDisarm} disabled={cards.trap_disarm === 0 || !pendingTrap}>
+                    함정 제거 ({cards.trap_disarm})
+                  </button>
+                  <button onClick={useMap} disabled={cards.map === 0}>
+                    지도 ({cards.map})
+                  </button>
+                  <button onClick={useMultiplierCard} disabled={cards.multiplier_card === 0}>
+                    배수 증가 ({cards.multiplier_card})
+                  </button>
+                </div>
+              </div>
+              
+              <div className="controls-section">
+                <h4>조작법</h4>
+                <div>방향키 또는 WASD: 이동</div>
+                <div>E: 탈출</div>
+                <div>1-4: 카드 사용</div>
+              </div>
+              
+              {pendingTrap && (
+                <div className="warning">
+                  ⚠️ 함정이 활성화되었습니다! 함정 제거 카드를 사용하세요.
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
